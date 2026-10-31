@@ -6,7 +6,9 @@ const pool = require('../db');
 
 const router = express.Router();
 
+// ==========================================
 // USER REGISTRATION
+// ==========================================
 router.post('/register', async (req, res) => {
   try {
     const { full_name, email, password } = req.body;
@@ -38,6 +40,7 @@ router.post('/register', async (req, res) => {
       });
     }
 
+    // Check whether email already exists
     const [existingUsers] = await pool.execute(
       'SELECT user_id FROM users WHERE email = ?',
       [cleanEmail]
@@ -49,11 +52,14 @@ router.post('/register', async (req, res) => {
       });
     }
 
+    // Hash password
     const passwordHash = await bcrypt.hash(password, 12);
 
+    // Always create a normal user.
+    // Admin privileges cannot be assigned through registration.
     const [result] = await pool.execute(
-      `INSERT INTO users (full_name, email, password_hash)
-       VALUES (?, ?, ?)`,
+      `INSERT INTO users (full_name, email, password_hash, role)
+       VALUES (?, ?, ?, 'user')`,
       [cleanName, cleanEmail, passwordHash]
     );
 
@@ -62,7 +68,8 @@ router.post('/register', async (req, res) => {
       user: {
         user_id: result.insertId,
         full_name: cleanName,
-        email: cleanEmail
+        email: cleanEmail,
+        role: 'user'
       }
     });
 
@@ -76,7 +83,9 @@ router.post('/register', async (req, res) => {
 });
 
 
+// ==========================================
 // USER LOGIN
+// ==========================================
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -89,8 +98,9 @@ router.post('/login', async (req, res) => {
 
     const cleanEmail = email.trim().toLowerCase();
 
+    // Fetch user including role
     const [users] = await pool.execute(
-      `SELECT user_id, full_name, email, password_hash
+      `SELECT user_id, full_name, email, password_hash, role
        FROM users
        WHERE email = ?`,
       [cleanEmail]
@@ -104,6 +114,7 @@ router.post('/login', async (req, res) => {
 
     const user = users[0];
 
+    // Verify password
     const passwordMatch = await bcrypt.compare(
       password,
       user.password_hash
@@ -115,10 +126,12 @@ router.post('/login', async (req, res) => {
       });
     }
 
+    // Generate JWT with user role
     const token = jwt.sign(
       {
         user_id: user.user_id,
-        email: user.email
+        email: user.email,
+        role: user.role
       },
       process.env.JWT_SECRET,
       {
@@ -132,7 +145,8 @@ router.post('/login', async (req, res) => {
       user: {
         user_id: user.user_id,
         full_name: user.full_name,
-        email: user.email
+        email: user.email,
+        role: user.role
       }
     });
 
