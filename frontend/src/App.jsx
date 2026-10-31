@@ -1,10 +1,10 @@
+
 import { useEffect, useMemo, useState } from 'react';
 import './App.css';
 
 const API_URL = 'http://localhost:5000/api/books';
 const RESERVATION_API_URL = 'http://localhost:5000/api/reservations';
-const USER_ID = 1;
-const MY_RESERVATIONS_API_URL = `${RESERVATION_API_URL}/${USER_ID}`;
+const AUTH_API_URL = 'http://localhost:5000/api/auth';
 
 function App() {
   const [books, setBooks] = useState([]);
@@ -12,14 +12,36 @@ function App() {
   const [category, setCategory] = useState('All');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+
+  // Authentication
+  const [token, setToken] = useState(
+    () => localStorage.getItem('shelfsense_token') || ''
+  );
+
+  const [user, setUser] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('shelfsense_user')) || null;
+    } catch {
+      return null;
+    }
+  });
+
+  const [authMode, setAuthMode] = useState('login');
+  const [authName, setAuthName] = useState('');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authMessage, setAuthMessage] = useState('');
+
   const [reservingBookId, setReservingBookId] = useState(null);
   const [cancellingReservationId, setCancellingReservationId] = useState(null);
   const [returningReservationId, setReturningReservationId] = useState(null);
   const [reservationMessage, setReservationMessage] = useState('');
   const [myReservations, setMyReservations] = useState([]);
-  const [reservationsLoading, setReservationsLoading] = useState(true);
+  const [reservationsLoading, setReservationsLoading] = useState(false);
   const [reservationsError, setReservationsError] = useState('');
 
+  // Load books
   const fetchBooks = async () => {
     try {
       const response = await fetch(API_URL);
@@ -40,18 +62,28 @@ function App() {
     }
   };
 
-  const fetchMyReservations = async () => {
+  // Load reservations belonging to the logged-in user
+  const fetchMyReservations = async (authToken = token) => {
+    if (!authToken) {
+      setMyReservations([]);
+      setReservationsLoading(false);
+      return;
+    }
+
     try {
       setReservationsLoading(true);
       setReservationsError('');
 
-      const response = await fetch(MY_RESERVATIONS_API_URL);
+      const response = await fetch(`${RESERVATION_API_URL}/me`, {
+        headers: {
+          Authorization: `Bearer ${authToken}`
+        }
+      });
+
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(
-          data.message || 'Unable to load your reservations.'
-        );
+        throw new Error(data.message || 'Unable to load your reservations.');
       }
 
       setMyReservations(data);
@@ -64,9 +96,99 @@ function App() {
 
   useEffect(() => {
     fetchBooks();
-    fetchMyReservations();
   }, []);
 
+  useEffect(() => {
+    if (token && user) {
+      fetchMyReservations(token);
+    } else {
+      setMyReservations([]);
+      setReservationsLoading(false);
+    }
+  }, [token, user]);
+
+  // Login and registration
+  const handleAuthSubmit = async (event) => {
+    event.preventDefault();
+
+    setAuthLoading(true);
+    setAuthMessage('');
+
+    try {
+      const endpoint =
+        authMode === 'register' ? '/register' : '/login';
+
+      const payload =
+        authMode === 'register'
+          ? {
+              full_name: authName.trim(),
+              email: authEmail.trim().toLowerCase(),
+              password: authPassword
+            }
+          : {
+              email: authEmail.trim().toLowerCase(),
+              password: authPassword
+            };
+
+      const response = await fetch(`${AUTH_API_URL}${endpoint}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.message || 'Authentication failed.');
+      }
+
+      if (authMode === 'register') {
+        setAuthMessage('Registration successful! Please log in.');
+        setAuthMode('login');
+        setAuthName('');
+        setAuthPassword('');
+      } else {
+        if (!data.token || !data.user) {
+          throw new Error('Login response is incomplete. Please try again.');
+        }
+
+        localStorage.setItem('shelfsense_token', data.token);
+        localStorage.setItem('shelfsense_user', JSON.stringify(data.user));
+
+        setToken(data.token);
+        setUser(data.user);
+        setAuthPassword('');
+        setAuthMessage('');
+        setReservationMessage('');
+        setReservationsError('');
+
+        await fetchMyReservations(data.token);
+      }
+    } catch (err) {
+      setAuthMessage(err.message);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  // Logout
+  const handleLogout = () => {
+    localStorage.removeItem('shelfsense_token');
+    localStorage.removeItem('shelfsense_user');
+
+    setToken('');
+    setUser(null);
+    setMyReservations([]);
+    setReservationsError('');
+    setReservationMessage('');
+    setAuthPassword('');
+    setAuthMessage('You have logged out successfully.');
+    setAuthMode('login');
+  };
+
+  // Book categories
   const categories = useMemo(
     () => [
       'All',
@@ -75,6 +197,7 @@ function App() {
     [books]
   );
 
+  // Search and filtering
   const filteredBooks = useMemo(() => {
     return books.filter((book) => {
       const searchText =
@@ -99,7 +222,17 @@ function App() {
     0
   );
 
+  // Reserve a book
   const handleReserve = async (book) => {
+    if (!token) {
+      setAuthMessage('Please log in to reserve a book.');
+      setAuthMode('login');
+      document.getElementById('authentication')?.scrollIntoView({
+        behavior: 'smooth'
+      });
+      return;
+    }
+
     setReservingBookId(book.book_id);
     setReservationMessage('');
 
@@ -107,10 +240,10 @@ function App() {
       const response = await fetch(RESERVATION_API_URL, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
         },
         body: JSON.stringify({
-          user_id: USER_ID,
           book_id: book.book_id
         })
       });
@@ -147,53 +280,51 @@ function App() {
       setReservingBookId(null);
     }
   };
-  
-const handleCancelReservation = async (reservation) => {
-  const reservationId = reservation.reservation_id;
 
-  if (!window.confirm('Are you sure you want to cancel this reservation?')) {
-    return;
-  }
+  // Cancel a reservation
+  const handleCancelReservation = async (reservation) => {
+    const reservationId = reservation.reservation_id;
 
-  setCancellingReservationId(reservationId);
-  setReservationMessage('');
-
-  try {
-    const response = await fetch(
-      `${RESERVATION_API_URL}/${reservationId}`,
-      {
-        method: 'DELETE',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          user_id: USER_ID
-        })
-      }
-    );
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      throw new Error(data.message || 'Unable to cancel reservation.');
+    if (!window.confirm('Are you sure you want to cancel this reservation?')) {
+      return;
     }
 
-    setReservationMessage(
-      `Success! Reservation #${reservationId} has been cancelled.`
-    );
+    setCancellingReservationId(reservationId);
+    setReservationMessage('');
 
-    await Promise.all([
-      fetchBooks(),
-      fetchMyReservations()
-    ]);
-  } catch (error) {
-    setReservationMessage(error.message);
-  } finally {
-    setCancellingReservationId(null);
-  }
-};
+    try {
+      const response = await fetch(
+        `${RESERVATION_API_URL}/${reservationId}`,
+        {
+          method: 'DELETE',
+          headers: {
+            Authorization: `Bearer ${token}`
+          }
+        }
+      );
 
+      const data = await response.json();
 
+      if (!response.ok) {
+        throw new Error(data.message || 'Unable to cancel reservation.');
+      }
+
+      setReservationMessage(
+        `Success! Reservation #${reservationId} has been cancelled.`
+      );
+
+      await Promise.all([
+        fetchBooks(),
+        fetchMyReservations()
+      ]);
+    } catch (err) {
+      setReservationMessage(err.message);
+    } finally {
+      setCancellingReservationId(null);
+    }
+  };
+
+  // Return a book
   const handleReturnReservation = async (reservation) => {
     const reservationId = reservation.reservation_id;
 
@@ -210,11 +341,8 @@ const handleCancelReservation = async (reservation) => {
         {
           method: 'POST',
           headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            user_id: USER_ID
-          })
+            Authorization: `Bearer ${token}`
+          }
         }
       );
 
@@ -232,13 +360,12 @@ const handleCancelReservation = async (reservation) => {
         fetchBooks(),
         fetchMyReservations()
       ]);
-    } catch (error) {
-      setReservationMessage(error.message);
+    } catch (err) {
+      setReservationMessage(err.message);
     } finally {
       setReturningReservationId(null);
     }
   };
-
 
   return (
     <div className="app">
@@ -257,9 +384,18 @@ const handleCancelReservation = async (reservation) => {
           <a href="#how-it-works">How It Works</a>
         </nav>
 
-        <a className="nav-button" href="#catalog">
-          Explore Library ↗
-        </a>
+        {user ? (
+          <div className="auth-nav">
+            <span>Hi, {user.full_name}</span>
+            <button type="button" className="nav-button" onClick={handleLogout}>
+              Logout
+            </button>
+          </div>
+        ) : (
+          <a className="nav-button" href="#authentication">
+            Login / Register
+          </a>
+        )}
       </header>
 
       <main>
@@ -330,6 +466,90 @@ const handleCancelReservation = async (reservation) => {
             </div>
           </div>
         </section>
+
+        {/* Authentication */}
+        {!user && (
+          <section className="auth-section section-wrap" id="authentication">
+            <div className="auth-card">
+              <div className="eyebrow">YOUR SHELFSENSE ACCOUNT</div>
+
+              <h2>
+                {authMode === 'login' ? 'Welcome back.' : 'Join our library.'}
+              </h2>
+
+              <p>
+                {authMode === 'login'
+                  ? 'Log in to reserve books and manage your reading list.'
+                  : 'Create an account to discover and reserve books.'}
+              </p>
+
+              <form onSubmit={handleAuthSubmit}>
+                {authMode === 'register' && (
+                  <input
+                    type="text"
+                    placeholder="Full name"
+                    value={authName}
+                    onChange={(event) => setAuthName(event.target.value)}
+                    minLength={2}
+                    maxLength={150}
+                    required
+                  />
+                )}
+
+                <input
+                  type="email"
+                  placeholder="Email address"
+                  value={authEmail}
+                  onChange={(event) => setAuthEmail(event.target.value)}
+                  required
+                />
+
+                <input
+                  type="password"
+                  placeholder="Password (minimum 8 characters)"
+                  value={authPassword}
+                  onChange={(event) => setAuthPassword(event.target.value)}
+                  minLength={8}
+                  required
+                />
+
+                <button
+                  type="submit"
+                  className="primary-button"
+                  disabled={authLoading}
+                >
+                  {authLoading
+                    ? 'Please wait...'
+                    : authMode === 'login'
+                      ? 'Login'
+                      : 'Create account'}
+                </button>
+              </form>
+
+              {authMessage && (
+                <p className="message" role="status">
+                  {authMessage}
+                </p>
+              )}
+
+              <p className="auth-switch">
+                {authMode === 'login'
+                  ? "Don't have an account?"
+                  : 'Already have an account?'}
+                {' '}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode(authMode === 'login' ? 'register' : 'login');
+                    setAuthMessage('');
+                  }}
+                >
+                  {authMode === 'login' ? 'Register' : 'Login'}
+                </button>
+              </p>
+            </div>
+          </section>
+        )}
 
         <section className="stats-strip" aria-label="Library statistics">
           <div>
@@ -428,9 +648,7 @@ const handleCancelReservation = async (reservation) => {
 
                 return (
                   <article className="book-card" key={book.book_id}>
-                    <div
-                      className={`book-cover cover-${(index % 5) + 1}`}
-                    >
+                    <div className={`book-cover cover-${(index % 5) + 1}`}>
                       <span className="cover-category">
                         {book.category || 'DISCOVER'}
                       </span>
@@ -517,10 +735,7 @@ const handleCancelReservation = async (reservation) => {
           )}
         </section>
 
-        <section
-          className="reservations-section section-wrap"
-          id="reservations"
-        >
+        <section className="reservations-section section-wrap" id="reservations">
           <div className="section-heading">
             <div>
               <div className="eyebrow">YOUR READING LIST</div>
@@ -535,17 +750,28 @@ const handleCancelReservation = async (reservation) => {
             </span>
           </div>
 
-          {reservationsLoading && (
+          {!user && (
+            <div className="empty-state">
+              <h3>Login to view your reservations</h3>
+              <p>Your personal reading list will appear here after login.</p>
+              <a className="text-button" href="#authentication">
+                Login / Register →
+              </a>
+            </div>
+          )}
+
+          {user && reservationsLoading && (
             <p className="message">Loading your reservations...</p>
           )}
 
-          {reservationsError && (
+          {user && reservationsError && (
             <p className="message error-message">
               {reservationsError}
             </p>
           )}
 
-          {!reservationsLoading &&
+          {user &&
+            !reservationsLoading &&
             !reservationsError &&
             myReservations.length === 0 && (
               <div className="empty-state">
@@ -559,7 +785,8 @@ const handleCancelReservation = async (reservation) => {
               </div>
             )}
 
-          {!reservationsLoading &&
+          {user &&
+            !reservationsLoading &&
             !reservationsError &&
             myReservations.length > 0 && (
               <div className="reservations-grid">
@@ -597,9 +824,7 @@ const handleCancelReservation = async (reservation) => {
                     <div className="reservation-meta">
                       Reserved on:{' '}
                       {reservation.reserved_at
-                        ? new Date(
-                            reservation.reserved_at
-                          ).toLocaleDateString()
+                        ? new Date(reservation.reserved_at).toLocaleDateString()
                         : 'Date unavailable'}
                     </div>
 
